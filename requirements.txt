@@ -1,0 +1,10 @@
+asyncio==3.4.3
+beautifulsoup4==4.11.1
+playwright==1.23.0
+torch==1.12.1
+transformers==4.24.0
+pandas==1.5.1
+tqdm==4.64.1
+flask==2.2.2
+fastapi==0.88.0
+uvicorn==0.18.2
