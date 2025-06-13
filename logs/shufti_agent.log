@@ -1,0 +1,17 @@
+2025-06-07 17:42:58 - shufti_agent - INFO - Data file shufti_data.json not found, starting with empty data
+2025-06-07 17:42:58 - shufti_agent - ERROR - Failed to save data to shufti_data.json: name 'open' is not defined
+2025-06-07 17:44:42 - shufti_agent - INFO - Data file shufti_data.json not found, starting with empty data
+2025-06-07 17:44:42 - shufti_agent - INFO - Saved data to shufti_data.json
+2025-06-07 17:48:49 - shufti_agent - INFO - Loaded data from shufti_data.json
+2025-06-07 17:48:49 - shufti_agent - INFO - Saved data to shufti_data.json
+2025-06-07 17:52:26 - shufti_agent - INFO - Loaded data from shufti_data.json
+2025-06-07 17:52:26 - shufti_agent - INFO - Saved data to shufti_data.json
+2025-06-07 17:54:32 - shufti_agent - INFO - Loaded data from shufti_data.json
+2025-06-07 17:54:32 - shufti_agent - INFO - Saved data to shufti_data.json
+2025-06-07 17:58:44 - shufti_agent - INFO - Loaded data from shufti_data.json
+2025-06-07 17:58:44 - shufti_agent - INFO - No existing memory file found, starting fresh
+2025-06-07 17:58:44 - shufti_agent - INFO - Agent memory initialized with 0 job records
+2025-06-07 17:58:44 - shufti_agent - INFO - Saved data to shufti_data.json
+2025-06-07 18:02:57 - shufti_agent - INFO - Loaded data from shufti_data.json
+2025-06-07 18:02:57 - shufti_agent - INFO - No existing memory file found, starting fresh
+2025-06-07 18:02:57 - shufti_agent - INFO - Agent memory initialized with 0 job records

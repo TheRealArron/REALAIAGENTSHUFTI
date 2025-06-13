@@ -1,323 +1,253 @@
-"""Simple data storage for job data and agent state."""
-
+"""
+Data storage utilities for the Shufti agent
+"""
 import json
-import threading
-from datetime import datetime, timezone
+import os
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass, asdict
-from enum import Enum
-
-from config.settings import settings
-from config.constants import JobStatus
-from utils.logger import log_info, log_error, log_debug
-
-
-@dataclass
-class JobData:
-    """Data structure for job information."""
-    job_id: str
-    title: str
-    description: str
-    url: str
-    price: Optional[str] = None
-    deadline: Optional[str] = None
-    category: Optional[str] = None
-    status: JobStatus = JobStatus.DISCOVERED
-    discovered_at: str = None
-    applied_at: Optional[str] = None
-    client_name: Optional[str] = None
-    requirements: List[str] = None
-    tags: List[str] = None
-    match_score: Optional[float] = None
-    application_message: Optional[str] = None
-    communication_history: List[Dict] = None
-    work_progress: Optional[Dict] = None
-    completed_at: Optional[str] = None
-
-    def __post_init__(self):
-        if self.discovered_at is None:
-            self.discovered_at = datetime.now(timezone.utc).isoformat()
-        if self.requirements is None:
-            self.requirements = []
-        if self.tags is None:
-            self.tags = []
-        if self.communication_history is None:
-            self.communication_history = []
-
-    def to_dict(self) -> Dict:
-        """Convert to dictionary."""
-        data = asdict(self)
-        data['status'] = self.status.value
-        return data
-
-    @classmethod
-    def from_dict(cls, data: Dict) -> 'JobData':
-        """Create from dictionary."""
-        if 'status' in data and isinstance(data['status'], str):
-            data['status'] = JobStatus(data['status'])
-        return cls(**data)
-
-    def update_status(self, new_status: JobStatus):
-        """Update job status with timestamp."""
-        old_status = self.status
-        self.status = new_status
-
-        # Add status change to communication history
-        self.communication_history.append({
-            'type': 'status_change',
-            'old_status': old_status.value,
-            'new_status': new_status.value,
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        })
-
-        # Set specific timestamps
-        if new_status == JobStatus.APPLIED:
-            self.applied_at = datetime.now(timezone.utc).isoformat()
-        elif new_status == JobStatus.COMPLETED:
-            self.completed_at = datetime.now(timezone.utc).isoformat()
-
-    def add_communication(self, message_type: str, content: str, sender: str = 'agent'):
-        """Add communication record."""
-        self.communication_history.append({
-            'type': message_type,
-            'sender': sender,
-            'content': content,
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        })
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+import threading
+from utils.logger import log_info, log_error, log_warning
 
 
 class DataStore:
-    """Thread-safe data storage for jobs and agent state."""
+    """Thread-safe data storage for job listings and agent state"""
 
-    def __init__(self, data_file: Path = None):
-        self.data_file = data_file or settings.JOBS_DATA_FILE
-        self.lock = threading.RLock()
-        self._jobs: Dict[str, JobData] = {}
-        self._metadata = {
-            'last_updated': None,
-            'total_jobs_discovered': 0,
-            'total_jobs_applied': 0,
-            'total_jobs_completed': 0,
-            'agent_start_time': datetime.now(timezone.utc).isoformat()
+    def __init__(self, data_file: str = "shufti_data.json"):
+        self.data_file = Path(data_file)  # Convert to Path object
+        self.lock = threading.Lock()
+        self.data = {
+            "jobs": {},
+            "applications": {},
+            "agent_state": {},
+            "messages": [],
+            "config": {}
         }
         self.load_data()
 
     def load_data(self):
-        """Load data from file."""
-        with self.lock:
-            try:
-                if self.data_file.exists():
-                    with open(self.data_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-
-                    # Load jobs
-                    jobs_data = data.get('jobs', {})
-                    self._jobs = {
-                        job_id: JobData.from_dict(job_data)
-                        for job_id, job_data in jobs_data.items()
-                    }
-
-                    # Load metadata
-                    self._metadata.update(data.get('metadata', {}))
-
-                    log_info(f"Loaded {len(self._jobs)} jobs from storage")
-                else:
-                    log_info("No existing data file found, starting fresh")
-
-            except Exception as e:
-                log_error(f"Failed to load data from {self.data_file}", error=str(e))
-                self._jobs = {}
+        """Load data from JSON file"""
+        try:
+            if self.data_file.exists():  # Now this will work
+                with self.data_file.open('r', encoding='utf-8') as f:
+                    loaded_data = json.load(f)
+                    # Update with loaded data while preserving structure
+                    for key in self.data:
+                        if key in loaded_data:
+                            self.data[key] = loaded_data[key]
+                log_info(f"Loaded data from {self.data_file}")
+            else:
+                log_info(f"Data file {self.data_file} not found, starting with empty data")
+        except Exception as e:
+            log_error(f"Failed to load data from {self.data_file}: {str(e)}")
 
     def save_data(self):
-        """Save data to file."""
-        with self.lock:
-            try:
-                # Ensure directory exists
+        """Save data to JSON file"""
+        try:
+            with self.lock:
+                # Create directory if it doesn't exist
                 self.data_file.parent.mkdir(parents=True, exist_ok=True)
 
-                # Prepare data for serialization
-                data = {
-                    'jobs': {
-                        job_id: job.to_dict()
-                        for job_id, job in self._jobs.items()
-                    },
-                    'metadata': self._metadata
-                }
+                # Use absolute path and ensure proper file handling
+                with self.data_file.open('w', encoding='utf-8') as f:
+                    json.dump(self.data, f, ensure_ascii=False, indent=2, default=str)
+                log_info(f"Saved data to {self.data_file}")
+        except Exception as e:
+            log_error(f"Failed to save data to {self.data_file}: {str(e)}")
 
-                # Update metadata
-                data['metadata']['last_updated'] = datetime.now(timezone.utc).isoformat()
-                data['metadata']['total_jobs_discovered'] = len(self._jobs)
-                data['metadata']['total_jobs_applied'] = len([
-                    j for j in self._jobs.values()
-                    if j.status.value in ['applied', 'in_progress', 'communicating', 'delivering', 'completed']
-                ])
-                data['metadata']['total_jobs_completed'] = len([
-                    j for j in self._jobs.values()
-                    if j.status == JobStatus.COMPLETED
-                ])
-
-                # Write to file
-                with open(self.data_file, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-
-                log_debug(f"Saved {len(self._jobs)} jobs to storage")
-
-            except Exception as e:
-                log_error(f"Failed to save data to {self.data_file}", error=str(e))
-
-    def add_job(self, job: JobData) -> bool:
-        """Add a new job."""
+    def store_job(self, job_id: str, job_data: Dict[str, Any]):
+        """Store job listing data"""
         with self.lock:
-            if job.job_id in self._jobs:
-                log_debug(f"Job {job.job_id} already exists, skipping")
-                return False
+            self.data["jobs"][job_id] = {
+                **job_data,
+                "stored_at": datetime.now().isoformat()
+            }
+        self.save_data()
 
-            self._jobs[job.job_id] = job
-            self.save_data()
-            log_info(f"Added new job: {job.job_id} - {job.title}")
-            return True
-
-    def get_job(self, job_id: str) -> Optional[JobData]:
-        """Get job by ID."""
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve job data by ID"""
         with self.lock:
-            return self._jobs.get(job_id)
+            return self.data["jobs"].get(job_id)
 
-    def update_job(self, job_id: str, **kwargs) -> bool:
-        """Update job data."""
+    def get_all_jobs(self) -> Dict[str, Dict[str, Any]]:
+        """Get all stored jobs"""
         with self.lock:
-            if job_id not in self._jobs:
-                log_error(f"Job {job_id} not found for update")
-                return False
+            return self.data["jobs"].copy()
 
-            job = self._jobs[job_id]
-            for key, value in kwargs.items():
-                if hasattr(job, key):
-                    setattr(job, key, value)
-
-            self.save_data()
-            log_debug(f"Updated job {job_id}")
-            return True
-
-    def update_job_status(self, job_id: str, new_status: JobStatus) -> bool:
-        """Update job status."""
+    def store_application(self, job_id: str, application_data: Dict[str, Any]):
+        """Store application data"""
         with self.lock:
-            if job_id not in self._jobs:
-                log_error(f"Job {job_id} not found for status update")
-                return False
+            self.data["applications"][job_id] = {
+                **application_data,
+                "applied_at": datetime.now().isoformat()
+            }
+        self.save_data()
 
-            old_status = self._jobs[job_id].status
-            self._jobs[job_id].update_status(new_status)
-            self.save_data()
-
-            log_info(f"Job {job_id} status: {old_status.value} -> {new_status.value}")
-            return True
-
-    def get_jobs_by_status(self, status: JobStatus) -> List[JobData]:
-        """Get all jobs with specific status."""
+    def get_application(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get application data by job ID"""
         with self.lock:
-            return [job for job in self._jobs.values() if job.status == status]
+            return self.data["applications"].get(job_id)
 
-    def get_jobs_by_statuses(self, statuses: List[JobStatus]) -> List[JobData]:
-        """Get jobs with any of the specified statuses."""
+    def get_all_applications(self) -> Dict[str, Dict[str, Any]]:
+        """Get all applications"""
         with self.lock:
-            return [job for job in self._jobs.values() if job.status in statuses]
+            return self.data["applications"].copy()
 
-    def get_all_jobs(self) -> List[JobData]:
-        """Get all jobs."""
+    def update_agent_state(self, state_data: Dict[str, Any]):
+        """Update agent state"""
         with self.lock:
-            return list(self._jobs.values())
+            self.data["agent_state"].update(state_data)
+            self.data["agent_state"]["updated_at"] = datetime.now().isoformat()
+        self.save_data()
 
-    def get_jobs_summary(self) -> Dict[str, int]:
-        """Get summary of jobs by status."""
+    def get_agent_state(self) -> Dict[str, Any]:
+        """Get current agent state"""
         with self.lock:
-            summary = {}
-            for status in JobStatus:
-                summary[status.value] = len([
-                    job for job in self._jobs.values()
-                    if job.status == status
-                ])
-            return summary
+            return self.data["agent_state"].copy()
 
-    def delete_job(self, job_id: str) -> bool:
-        """Delete a job."""
+    def add_message(self, message_data: Dict[str, Any]):
+        """Add a message to the log"""
         with self.lock:
-            if job_id in self._jobs:
-                del self._jobs[job_id]
-                self.save_data()
-                log_info(f"Deleted job {job_id}")
-                return True
-            return False
+            message_data["timestamp"] = datetime.now().isoformat()
+            self.data["messages"].append(message_data)
 
-    def cleanup_old_jobs(self, days: int = 30):
-        """Remove jobs older than specified days."""
+            # Keep only last 1000 messages to prevent file from growing too large
+            if len(self.data["messages"]) > 1000:
+                self.data["messages"] = self.data["messages"][-1000:]
+        self.save_data()
+
+    def get_messages(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get recent messages"""
         with self.lock:
-            cutoff_date = datetime.now(timezone.utc).timestamp() - (days * 24 * 3600)
-            jobs_to_delete = []
+            return self.data["messages"][-limit:] if self.data["messages"] else []
 
-            for job_id, job in self._jobs.items():
+    def set_config(self, key: str, value: Any):
+        """Set configuration value"""
+        with self.lock:
+            self.data["config"][key] = value
+        self.save_data()
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """Get configuration value"""
+        with self.lock:
+            return self.data["config"].get(key, default)
+
+    def clear_old_jobs(self, days_old: int = 30):
+        """Clear jobs older than specified days"""
+        cutoff_date = datetime.now().timestamp() - (days_old * 24 * 60 * 60)
+
+        with self.lock:
+            jobs_to_remove = []
+            for job_id, job_data in self.data["jobs"].items():
                 try:
-                    job_date = datetime.fromisoformat(job.discovered_at.replace('Z', '+00:00'))
-                    if job_date.timestamp() < cutoff_date and job.status in [JobStatus.COMPLETED, JobStatus.REJECTED,
-                                                                             JobStatus.FAILED]:
-                        jobs_to_delete.append(job_id)
-                except Exception as e:
-                    log_error(f"Error parsing date for job {job_id}", error=str(e))
+                    stored_at = datetime.fromisoformat(job_data.get("stored_at", ""))
+                    if stored_at.timestamp() < cutoff_date:
+                        jobs_to_remove.append(job_id)
+                except (ValueError, TypeError):
+                    # If date parsing fails, consider it old
+                    jobs_to_remove.append(job_id)
 
-            for job_id in jobs_to_delete:
-                del self._jobs[job_id]
+            for job_id in jobs_to_remove:
+                del self.data["jobs"][job_id]
 
-            if jobs_to_delete:
-                self.save_data()
-                log_info(f"Cleaned up {len(jobs_to_delete)} old jobs")
+            if jobs_to_remove:
+                log_info(f"Removed {len(jobs_to_remove)} old jobs")
 
-    def export_data(self, export_file: Path) -> bool:
-        """Export data to a different file."""
+        if jobs_to_remove:
+            self.save_data()
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get storage statistics"""
         with self.lock:
-            try:
-                data = {
-                    'jobs': {
-                        job_id: job.to_dict()
-                        for job_id, job in self._jobs.items()
-                    },
-                    'metadata': self._metadata,
-                    'export_timestamp': datetime.now(timezone.utc).isoformat()
-                }
-
-                with open(export_file, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-
-                log_info(f"Exported data to {export_file}")
-                return True
-
-            except Exception as e:
-                log_error(f"Failed to export data to {export_file}", error=str(e))
-                return False
-
-    def get_statistics(self) -> Dict[str, Any]:
-        """Get detailed statistics."""
-        with self.lock:
-            stats = {
-                'total_jobs': len(self._jobs),
-                'status_breakdown': self.get_jobs_summary(),
-                'metadata': self._metadata.copy()
+            return {
+                "total_jobs": len(self.data["jobs"]),
+                "total_applications": len(self.data["applications"]),
+                "total_messages": len(self.data["messages"]),
+                "data_file_size": self.data_file.stat().st_size if self.data_file.exists() else 0,
+                "last_updated": self.data["agent_state"].get("updated_at", "Never")
             }
 
-            # Calculate additional metrics
-            if self._jobs:
-                completed_jobs = [j for j in self._jobs.values() if j.status == JobStatus.COMPLETED]
-                applied_jobs = [j for j in self._jobs.values() if j.applied_at]
+    def backup_data(self, backup_file: Optional[str] = None):
+        """Create a backup of current data"""
+        if backup_file is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = f"shufti_backup_{timestamp}.json"
 
-                stats['completion_rate'] = len(completed_jobs) / len(applied_jobs) if applied_jobs else 0
-                stats['average_match_score'] = sum(j.match_score for j in self._jobs.values() if j.match_score) / len(
-                    [j for j in self._jobs.values() if j.match_score]) if any(
-                    j.match_score for j in self._jobs.values()) else 0
+        backup_path = Path(backup_file)
+        try:
+            with self.lock:
+                with backup_path.open('w', encoding='utf-8') as f:
+                    json.dump(self.data, f, ensure_ascii=False, indent=2, default=str)
+            log_info(f"Data backed up to {backup_path}")
+            return str(backup_path)
+        except Exception as e:
+            log_error(f"Failed to backup data: {str(e)}")
+            return None
+
+    def restore_from_backup(self, backup_file: str):
+        """Restore data from backup file"""
+        backup_path = Path(backup_file)
+        try:
+            if backup_path.exists():
+                with backup_path.open('r', encoding='utf-8') as f:
+                    backup_data = json.load(f)
+
+                with self.lock:
+                    self.data = backup_data
+
+                self.save_data()
+                log_info(f"Data restored from {backup_path}")
+                return True
             else:
-                stats['completion_rate'] = 0
-                stats['average_match_score'] = 0
+                log_error(f"Backup file {backup_path} not found")
+                return False
+        except Exception as e:
+            log_error(f"Failed to restore from backup: {str(e)}")
+            return False
 
-            return stats
+    def __del__(self):
+        """Ensure data is saved when object is destroyed"""
+        try:
+            self.save_data()
+        except:
+            pass  # Ignore errors during cleanup
 
 
 # Global data store instance
 data_store = DataStore()
+
+
+def get_data_store() -> DataStore:
+    """Get the global data store instance"""
+    return data_store
+
+
+# Convenience functions for common operations
+def store_job_data(job_id: str, job_data: Dict[str, Any]):
+    """Store job data using global data store"""
+    data_store.store_job(job_id, job_data)
+
+
+def get_job_data(job_id: str) -> Optional[Dict[str, Any]]:
+    """Get job data using global data store"""
+    return data_store.get_job(job_id)
+
+
+def store_application_data(job_id: str, application_data: Dict[str, Any]):
+    """Store application data using global data store"""
+    data_store.store_application(job_id, application_data)
+
+
+def get_application_data(job_id: str) -> Optional[Dict[str, Any]]:
+    """Get application data using global data store"""
+    return data_store.get_application(job_id)
+
+
+def log_agent_message(message_type: str, content: str, metadata: Optional[Dict[str, Any]] = None):
+    """Log agent message using global data store"""
+    message_data = {
+        "type": message_type,
+        "content": content,
+        "metadata": metadata or {}
+    }
+    data_store.add_message(message_data)

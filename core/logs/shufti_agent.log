@@ -1,0 +1,3 @@
+2025-06-07 18:02:47 - shufti_agent - INFO - Data file shufti_data.json not found, starting with empty data
+2025-06-07 18:02:47 - shufti_agent - INFO - No existing memory file found, starting fresh
+2025-06-07 18:02:47 - shufti_agent - INFO - Agent memory initialized with 0 job records

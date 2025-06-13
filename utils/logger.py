@@ -1,142 +1,144 @@
-"""Logging configuration for the Shufti agent."""
-
+"""
+Logging utilities for the Shufti agent
+"""
+import logging
 import sys
+from datetime import datetime
 from pathlib import Path
-from loguru import logger
-from config.settings import settings
+from typing import Optional, Any
 
 
-class Logger:
-    """Centralized logging configuration."""
+class ShuftiLogger:
+    """Custom logger for the Shufti agent"""
 
-    def __init__(self):
-        self.setup_logger()
+    def __init__(self, name: str = "shufti_agent"):
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(logging.DEBUG)
 
-    def setup_logger(self):
-        """Configure loguru logger with file and console output."""
-        # Remove default logger
-        logger.remove()
+        # Prevent duplicate handlers
+        if not self.logger.handlers:
+            self.setup_handlers()
 
-        # Console logger with colors
-        logger.add(
-            sys.stderr,
-            level=settings.LOG_LEVEL,
-            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-            colorize=True
+    def setup_handlers(self):
+        """Setup logging handlers"""
+        # Console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+
+        # File handler
+        log_file = Path("logs") / "shufti_agent.log"
+        log_file.parent.mkdir(exist_ok=True)
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+
+        # Formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
         )
 
-        # File logger
-        logger.add(
-            settings.LOG_FILE,
-            level=settings.LOG_LEVEL,
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-            rotation="10 MB",
-            retention="7 days",
-            compression="zip"
-        )
+        console_handler.setFormatter(formatter)
+        file_handler.setFormatter(formatter)
 
-        # Add structured logging for important events
-        logger.add(
-            settings.LOG_DIR / "structured.log",
-            level="INFO",
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {extra} | {message}",
-            filter=lambda record: "structured" in record["extra"],
-            rotation="1 day",
-            retention="30 days"
-        )
+        self.logger.addHandler(console_handler)
+        self.logger.addHandler(file_handler)
 
-    def get_logger(self, name: str = None):
-        """Get a logger instance with optional name."""
-        if name:
-            return logger.bind(name=name)
-        return logger
+    def info(self, message: str, extra: Optional[dict] = None):
+        """Log info message"""
+        self.logger.info(message, extra=extra)
 
+    def error(self, message: str, extra: Optional[dict] = None):
+        """Log error message"""
+        self.logger.error(message, extra=extra)
 
-# Create global logger instance
-log_manager = Logger()
-app_logger = log_manager.get_logger("shufti_agent")
+    def warning(self, message: str, extra: Optional[dict] = None):
+        """Log warning message"""
+        self.logger.warning(message, extra=extra)
+
+    def debug(self, message: str, extra: Optional[dict] = None):
+        """Log debug message"""
+        self.logger.debug(message, extra=extra)
+
+    def workflow_state(self, state: str, details: Optional[dict] = None):
+        """Log workflow state changes"""
+        message = f"Workflow State: {state}"
+        if details:
+            message += f" - Details: {details}"
+        self.logger.info(message)
 
 
-# Convenience functions for different log levels
-def log_info(message: str, **kwargs):
-    """Log info message with optional structured data."""
-    if kwargs:
-        app_logger.bind(structured=True, **kwargs).info(message)
-    else:
-        app_logger.info(message)
+# Global logger instance
+_logger = ShuftiLogger()
 
 
-def log_error(message: str, **kwargs):
-    """Log error message with optional structured data."""
-    if kwargs:
-        app_logger.bind(structured=True, **kwargs).error(message)
-    else:
-        app_logger.error(message)
+def get_logger() -> ShuftiLogger:
+    """Get the global logger instance"""
+    return _logger
 
 
-def log_warning(message: str, **kwargs):
-    """Log warning message with optional structured data."""
-    if kwargs:
-        app_logger.bind(structured=True, **kwargs).warning(message)
-    else:
-        app_logger.warning(message)
+# Convenience functions
+def log_info(message: str, extra: Optional[dict] = None):
+    """Log info message"""
+    _logger.info(message, extra)
 
 
-def log_debug(message: str, **kwargs):
-    """Log debug message with optional structured data."""
-    if kwargs:
-        app_logger.bind(structured=True, **kwargs).debug(message)
-    else:
-        app_logger.debug(message)
+def log_error(message: str, extra: Optional[dict] = None):
+    """Log error message"""
+    _logger.error(message, extra)
 
 
-def log_job_event(event_type: str, job_id: str, details: dict = None):
-    """Log job-related events with structured data."""
-    log_data = {
-        "event_type": event_type,
-        "job_id": job_id,
-        "structured": True
-    }
+def log_warning(message: str, extra: Optional[dict] = None):
+    """Log warning message"""
+    _logger.warning(message, extra)
+
+
+def log_debug(message: str, extra: Optional[dict] = None):
+    """Log debug message"""
+    _logger.debug(message, extra)
+
+
+def log_workflow_state(state: str, details: Optional[dict] = None):
+    """Log workflow state changes"""
+    _logger.workflow_state(state, details)
+
+
+def log_job_application(job_id: str, status: str, details: Optional[dict] = None):
+    """Log job application events"""
+    message = f"Job Application {job_id}: {status}"
     if details:
-        log_data.update(details)
-
-    app_logger.bind(**log_data).info(f"Job event: {event_type}")
-
-
-def log_workflow_state(old_state: str, new_state: str, reason: str = None):
-    """Log workflow state changes."""
-    log_data = {
-        "old_state": old_state,
-        "new_state": new_state,
-        "structured": True
-    }
-    if reason:
-        log_data["reason"] = reason
-
-    app_logger.bind(**log_data).info(f"Workflow state change: {old_state} -> {new_state}")
+        message += f" - {details}"
+    _logger.info(message)
 
 
-def log_rate_limit(endpoint: str, wait_time: float):
-    """Log rate limiting events."""
-    app_logger.bind(
-        structured=True,
-        endpoint=endpoint,
-        wait_time=wait_time
-    ).warning(f"Rate limited on {endpoint}, waiting {wait_time}s")
+def log_web_request(url: str, method: str = "GET", status_code: Optional[int] = None):
+    """Log web requests"""
+    message = f"Web Request: {method} {url}"
+    if status_code:
+        message += f" - Status: {status_code}"
+    _logger.debug(message)
 
 
-def log_api_call(service: str, method: str, success: bool, response_time: float = None):
-    """Log API calls with performance metrics."""
-    log_data = {
-        "service": service,
-        "method": method,
-        "success": success,
-        "structured": True
-    }
-    if response_time:
-        log_data["response_time"] = response_time
+def log_ai_interaction(prompt: str, response: Optional[str] = None, model: Optional[str] = None):
+    """Log AI model interactions"""
+    message = f"AI Interaction"
+    if model:
+        message += f" ({model})"
+    message += f" - Prompt length: {len(prompt)}"
+    if response:
+        message += f" - Response length: {len(response)}"
+    _logger.debug(message)
 
-    level = "info" if success else "error"
-    message = f"API call {service}.{method} {'succeeded' if success else 'failed'}"
 
-    getattr(app_logger.bind(**log_data), level)(message)
+def log_job_discovery(job_count: int, source: str = "shufti"):
+    """Log job discovery events"""
+    message = f"Job Discovery: Found {job_count} jobs from {source}"
+    _logger.info(message)
+
+
+def log_authentication(success: bool, details: Optional[str] = None):
+    """Log authentication events"""
+    status = "SUCCESS" if success else "FAILED"
+    message = f"Authentication: {status}"
+    if details:
+        message += f" - {details}"
+    _logger.info(message)

@@ -1,368 +1,417 @@
-"""Agent memory and state management."""
+"""
+Agent Memory Management System
+
+This module handles the persistent memory and state management for the Shufti agent,
+including job history, user preferences, and workflow states.
+"""
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass, asdict, field
+from typing import Dict, List, Any, Optional, Set
+from dataclasses import dataclass, asdict
 from enum import Enum
 
-from config.settings import settings
-from config.constants import WorkflowState, JobStatus
-from utils.logger import log_info, log_error, log_debug, log_workflow_state
+from utils.logger import log_info, log_error, log_warning
+from config.constants import MAX_MEMORY_ENTRIES, MEMORY_RETENTION_DAYS
+
+
+class JobStatus(Enum):
+    """Job application and processing status"""
+    DISCOVERED = "discovered"
+    MATCHED = "matched"
+    APPLIED = "applied"
+    ACCEPTED = "accepted"
+    IN_PROGRESS = "in_progress"
+    SUBMITTED = "submitted"
+    COMPLETED = "completed"
+    REJECTED = "rejected"
+    FAILED = "failed"
 
 
 @dataclass
-class AgentCapabilities:
-    """Agent's capabilities and skills."""
-    skills: List[str] = field(default_factory=list)
-    languages: List[str] = field(default_factory=lambda: ['Japanese', 'English'])
-    categories: List[str] = field(default_factory=list)
-    experience_level: str = 'intermediate'
-    max_concurrent_jobs: int = 3
-    preferred_job_types: List[str] = field(default_factory=list)
+class JobMemory:
+    """Memory entry for a specific job"""
+    job_id: str
+    title: str
+    company: str
+    url: str
+    status: JobStatus
+    applied_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    payment_amount: Optional[float] = None
+    notes: str = ""
+    communication_history: List[Dict] = None
+    task_details: Dict = None
 
     def __post_init__(self):
-        if not self.skills:
-            self.skills = [
-                'web_development', 'data_entry', 'translation',
-                'writing', 'research', 'content_creation'
-            ]
-        if not self.categories:
-            self.categories = [
-                'web_development', 'data_entry', 'translation',
-                'writing', 'design'
-            ]
-        if not self.preferred_job_types:
-            self.preferred_job_types = [
-                'short_term', 'fixed_price', 'remote'
-            ]
+        if self.communication_history is None:
+            self.communication_history = []
+        if self.task_details is None:
+            self.task_details = {}
 
 
 @dataclass
-class AgentPerformance:
-    """Agent performance metrics."""
+class UserPreferences:
+    """User preferences and settings"""
+    preferred_job_types: List[str] = None
+    minimum_payment: float = 0.0
+    maximum_daily_applications: int = 10
+    working_hours: Dict[str, str] = None
+    blacklisted_companies: Set[str] = None
+    keywords_to_avoid: Set[str] = None
+    preferred_keywords: Set[str] = None
+
+    def __post_init__(self):
+        if self.preferred_job_types is None:
+            self.preferred_job_types = []
+        if self.working_hours is None:
+            self.working_hours = {"start": "09:00", "end": "18:00"}
+        if self.blacklisted_companies is None:
+            self.blacklisted_companies = set()
+        if self.keywords_to_avoid is None:
+            self.keywords_to_avoid = set()
+        if self.preferred_keywords is None:
+            self.preferred_keywords = set()
+
+
+@dataclass
+class SessionStats:
+    """Statistics for current session"""
     jobs_discovered: int = 0
     jobs_applied: int = 0
-    jobs_accepted: int = 0
     jobs_completed: int = 0
-    jobs_rejected: int = 0
-    average_completion_time: float = 0.0
-    success_rate: float = 0.0
-    client_satisfaction: float = 0.0
-    earnings_total: float = 0.0
-    last_activity: Optional[str] = None
+    total_earnings: float = 0.0
+    session_start: datetime = None
+    last_activity: datetime = None
 
-    def update_metrics(self, job_data: Dict[str, Any]):
-        """Update performance metrics based on job data."""
-        self.last_activity = datetime.now(timezone.utc).isoformat()
-
-        # Update counters based on job status changes
-        if job_data.get('event') == 'job_discovered':
-            self.jobs_discovered += 1
-        elif job_data.get('event') == 'job_applied':
-            self.jobs_applied += 1
-        elif job_data.get('event') == 'job_accepted':
-            self.jobs_accepted += 1
-        elif job_data.get('event') == 'job_completed':
-            self.jobs_completed += 1
-            if 'earnings' in job_data:
-                self.earnings_total += float(job_data['earnings'])
-        elif job_data.get('event') == 'job_rejected':
-            self.jobs_rejected += 1
-
-        # Calculate success rate
-        if self.jobs_applied > 0:
-            self.success_rate = self.jobs_accepted / self.jobs_applied
-
-
-@dataclass
-class WorkflowContext:
-    """Current workflow context and state."""
-    current_state: WorkflowState = WorkflowState.IDLE
-    previous_state: Optional[WorkflowState] = None
-    state_changed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    current_job_id: Optional[str] = None
-    active_jobs: List[str] = field(default_factory=list)
-    pending_actions: List[Dict] = field(default_factory=list)
-    error_count: int = 0
-    last_error: Optional[str] = None
-    session_start_time: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-    def change_state(self, new_state: WorkflowState, reason: str = None):
-        """Change workflow state with logging."""
-        old_state = self.current_state
-        self.previous_state = old_state
-        self.current_state = new_state
-        self.state_changed_at = datetime.now(timezone.utc).isoformat()
-
-        log_workflow_state(old_state.value, new_state.value, reason)
-
-    def add_pending_action(self, action_type: str, data: Dict[str, Any]):
-        """Add a pending action to the queue."""
-        self.pending_actions.append({
-            'type': action_type,
-            'data': data,
-            'created_at': datetime.now(timezone.utc).isoformat()
-        })
-
-    def get_next_action(self) -> Optional[Dict]:
-        """Get and remove the next pending action."""
-        if self.pending_actions:
-            return self.pending_actions.pop(0)
-        return None
-
-    def record_error(self, error_message: str):
-        """Record an error occurrence."""
-        self.error_count += 1
-        self.last_error = error_message
+    def __post_init__(self):
+        if self.session_start is None:
+            self.session_start = datetime.now()
+        if self.last_activity is None:
+            self.last_activity = datetime.now()
 
 
 class AgentMemory:
-    """Centralized agent memory and state management."""
+    """
+    Centralized memory management for the Shufti agent
 
-    def __init__(self, memory_file: Path = None):
-        self.memory_file = memory_file or settings.MEMORY_FILE
+    Handles:
+    - Job application history
+    - User preferences
+    - Session statistics
+    - Workflow states
+    - Communication history
+    """
+
+    def __init__(self, memory_file: str = "agent_memory.json"):
+        self.memory_file = Path(memory_file)  # Convert to Path object
         self.lock = threading.RLock()
 
-        # Core components
-        self.capabilities = AgentCapabilities()
-        self.performance = AgentPerformance()
-        self.workflow = WorkflowContext()
-
-        # Session data
-        self.session_data: Dict[str, Any] = {}
-        self.learned_patterns: Dict[str, Any] = {}
-        self.client_interactions: Dict[str, List[Dict]] = {}
+        # Initialize memory components
+        self.jobs: Dict[str, JobMemory] = {}
+        self.preferences = UserPreferences()
+        self.session_stats = SessionStats()
+        self.workflow_states: Dict[str, Any] = {}
+        self.communication_log: List[Dict] = []
 
         # Load existing memory
         self.load_memory()
 
+        log_info(f"Agent memory initialized with {len(self.jobs)} job records")
+
     def load_memory(self):
-        """Load memory from file."""
-        with self.lock:
-            try:
-                if self.memory_file.exists():
-                    with open(self.memory_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
+        """Load memory from persistent storage"""
+        try:
+            if self.memory_file.exists():
+                with open(self.memory_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
 
-                    # Load capabilities
-                    if 'capabilities' in data:
-                        cap_data = data['capabilities']
-                        self.capabilities = AgentCapabilities(**cap_data)
+                # Load jobs
+                if 'jobs' in data:
+                    for job_id, job_data in data['jobs'].items():
+                        # Convert datetime strings back to datetime objects
+                        if job_data.get('applied_at'):
+                            job_data['applied_at'] = datetime.fromisoformat(job_data['applied_at'])
+                        if job_data.get('completed_at'):
+                            job_data['completed_at'] = datetime.fromisoformat(job_data['completed_at'])
 
-                    # Load performance metrics
-                    if 'performance' in data:
-                        perf_data = data['performance']
-                        self.performance = AgentPerformance(**perf_data)
+                        # Convert status string to enum
+                        if 'status' in job_data:
+                            job_data['status'] = JobStatus(job_data['status'])
 
-                    # Load workflow context (but reset current state)
-                    if 'workflow' in data:
-                        workflow_data = data['workflow']
-                        # Don't restore current state - start fresh
-                        workflow_data['current_state'] = WorkflowState.IDLE.value
-                        workflow_data['current_job_id'] = None
-                        workflow_data['active_jobs'] = []
-                        workflow_data['pending_actions'] = []
-                        self.workflow = WorkflowContext(**workflow_data)
+                        self.jobs[job_id] = JobMemory(**job_data)
 
-                    # Load other data
-                    self.session_data = data.get('session_data', {})
-                    self.learned_patterns = data.get('learned_patterns', {})
-                    self.client_interactions = data.get('client_interactions', {})
+                # Load preferences
+                if 'preferences' in data:
+                    pref_data = data['preferences']
+                    # Convert sets stored as lists back to sets
+                    for key in ['blacklisted_companies', 'keywords_to_avoid', 'preferred_keywords']:
+                        if key in pref_data and isinstance(pref_data[key], list):
+                            pref_data[key] = set(pref_data[key])
+                    self.preferences = UserPreferences(**pref_data)
 
-                    log_info("Loaded agent memory from storage")
-                else:
-                    log_info("No existing memory file found, starting fresh")
+                # Load session stats
+                if 'session_stats' in data:
+                    stats_data = data['session_stats']
+                    if stats_data.get('session_start'):
+                        stats_data['session_start'] = datetime.fromisoformat(stats_data['session_start'])
+                    if stats_data.get('last_activity'):
+                        stats_data['last_activity'] = datetime.fromisoformat(stats_data['last_activity'])
+                    self.session_stats = SessionStats(**stats_data)
 
-            except Exception as e:
-                log_error(f"Failed to load memory from {self.memory_file}", error=str(e))
+                # Load other data
+                self.workflow_states = data.get('workflow_states', {})
+                self.communication_log = data.get('communication_log', [])
+
+                log_info("Memory loaded successfully")
+            else:
+                log_info("No existing memory file found, starting fresh")
+
+        except Exception as e:
+            log_error(f"Failed to load memory from {self.memory_file}: {str(e)}")
+            log_warning("Starting with empty memory")
 
     def save_memory(self):
-        """Save memory to file."""
+        """Save memory to persistent storage"""
         with self.lock:
             try:
-                # Ensure directory exists
-                self.memory_file.parent.mkdir(parents=True, exist_ok=True)
-
-                # Convert workflow state enum to string
-                workflow_data = asdict(self.workflow)
-                workflow_data['current_state'] = self.workflow.current_state.value
-                if self.workflow.previous_state:
-                    workflow_data['previous_state'] = self.workflow.previous_state.value
-
+                # Prepare data for JSON serialization
                 data = {
-                    'capabilities': asdict(self.capabilities),
-                    'performance': asdict(self.performance),
-                    'workflow': workflow_data,
-                    'session_data': self.session_data,
-                    'learned_patterns': self.learned_patterns,
-                    'client_interactions': self.client_interactions,
-                    'last_saved': datetime.now(timezone.utc).isoformat()
+                    'jobs': {},
+                    'preferences': asdict(self.preferences),
+                    'session_stats': asdict(self.session_stats),
+                    'workflow_states': self.workflow_states,
+                    'communication_log': self.communication_log[-1000:],  # Keep last 1000 messages
+                    'saved_at': datetime.now().isoformat()
                 }
 
+                # Convert jobs to serializable format
+                for job_id, job in self.jobs.items():
+                    job_dict = asdict(job)
+                    # Convert datetime objects to ISO format strings
+                    if job_dict.get('applied_at'):
+                        job_dict['applied_at'] = job_dict['applied_at'].isoformat()
+                    if job_dict.get('completed_at'):
+                        job_dict['completed_at'] = job_dict['completed_at'].isoformat()
+                    # Convert enum to string
+                    if 'status' in job_dict:
+                        job_dict['status'] = job_dict['status'].value
+                    data['jobs'][job_id] = job_dict
+
+                # Convert sets to lists for JSON serialization
+                pref_data = data['preferences']
+                for key in ['blacklisted_companies', 'keywords_to_avoid', 'preferred_keywords']:
+                    if key in pref_data and isinstance(pref_data[key], set):
+                        pref_data[key] = list(pref_data[key])
+
+                # Convert session stats datetime objects
+                stats_data = data['session_stats']
+                if stats_data.get('session_start'):
+                    stats_data['session_start'] = stats_data['session_start'].isoformat()
+                if stats_data.get('last_activity'):
+                    stats_data['last_activity'] = stats_data['last_activity'].isoformat()
+
+                # Write to file
                 with open(self.memory_file, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
 
-                log_debug("Saved agent memory to storage")
+                log_info(f"Memory saved to {self.memory_file}")
 
             except Exception as e:
-                log_error(f"Failed to save memory to {self.memory_file}", error=str(e))
+                log_error(f"Failed to save memory: {str(e)}")
 
-    def update_capabilities(self, **kwargs):
-        """Update agent capabilities."""
+    def add_job(self, job_memory: JobMemory):
+        """Add or update a job in memory"""
         with self.lock:
-            for key, value in kwargs.items():
-                if hasattr(self.capabilities, key):
-                    setattr(self.capabilities, key, value)
-            self.save_memory()
-            log_debug("Updated agent capabilities")
+            self.jobs[job_memory.job_id] = job_memory
+            self.session_stats.last_activity = datetime.now()
 
-    def record_performance_event(self, event_type: str, job_data: Dict[str, Any] = None):
-        """Record a performance-related event."""
-        with self.lock:
-            event_data = {'event': event_type}
-            if job_data:
-                event_data.update(job_data)
+            if job_memory.status == JobStatus.DISCOVERED:
+                self.session_stats.jobs_discovered += 1
+            elif job_memory.status == JobStatus.APPLIED:
+                self.session_stats.jobs_applied += 1
+            elif job_memory.status == JobStatus.COMPLETED:
+                self.session_stats.jobs_completed += 1
+                if job_memory.payment_amount:
+                    self.session_stats.total_earnings += job_memory.payment_amount
 
-            self.performance.update_metrics(event_data)
-            self.save_memory()
-            log_debug(f"Recorded performance event: {event_type}")
-
-    def change_workflow_state(self, new_state: WorkflowState, reason: str = None):
-        """Change workflow state."""
-        with self.lock:
-            self.workflow.change_state(new_state, reason)
             self.save_memory()
 
-    def get_current_state(self) -> WorkflowState:
-        """Get current workflow state."""
-        return self.workflow.current_state
+    def get_job(self, job_id: str) -> Optional[JobMemory]:
+        """Retrieve a job from memory"""
+        return self.jobs.get(job_id)
 
-    def is_available_for_new_jobs(self) -> bool:
-        """Check if agent can take on new jobs."""
+    def update_job_status(self, job_id: str, status: JobStatus, notes: str = ""):
+        """Update job status"""
         with self.lock:
-            active_count = len(self.workflow.active_jobs)
-            max_concurrent = self.capabilities.max_concurrent_jobs
+            if job_id in self.jobs:
+                old_status = self.jobs[job_id].status
+                self.jobs[job_id].status = status
+                self.jobs[job_id].notes = notes
+                self.session_stats.last_activity = datetime.now()
 
-            return (
-                    active_count < max_concurrent and
-                    self.workflow.current_state in [WorkflowState.IDLE, WorkflowState.CRAWLING]
-            )
+                if status == JobStatus.APPLIED and old_status != JobStatus.APPLIED:
+                    self.jobs[job_id].applied_at = datetime.now()
+                    self.session_stats.jobs_applied += 1
+                elif status == JobStatus.COMPLETED and old_status != JobStatus.COMPLETED:
+                    self.jobs[job_id].completed_at = datetime.now()
+                    self.session_stats.jobs_completed += 1
 
-    def add_active_job(self, job_id: str):
-        """Add a job to active jobs list."""
-        with self.lock:
-            if job_id not in self.workflow.active_jobs:
-                self.workflow.active_jobs.append(job_id)
                 self.save_memory()
-                log_debug(f"Added active job: {job_id}")
+                log_info(f"Updated job {job_id} status: {old_status.value} -> {status.value}")
 
-    def remove_active_job(self, job_id: str):
-        """Remove a job from active jobs list."""
+    def get_jobs_by_status(self, status: JobStatus) -> List[JobMemory]:
+        """Get all jobs with a specific status"""
+        return [job for job in self.jobs.values() if job.status == status]
+
+    def get_recent_jobs(self, days: int = 7) -> List[JobMemory]:
+        """Get jobs from the last N days"""
+        cutoff_date = datetime.now() - timedelta(days=days)
+        return [
+            job for job in self.jobs.values()
+            if job.applied_at and job.applied_at > cutoff_date
+        ]
+
+    def is_job_blacklisted(self, company: str, title: str) -> bool:
+        """Check if a job should be avoided"""
+        # Check company blacklist
+        if company.lower() in {c.lower() for c in self.preferences.blacklisted_companies}:
+            return True
+
+        # Check keywords to avoid
+        title_lower = title.lower()
+        for keyword in self.preferences.keywords_to_avoid:
+            if keyword.lower() in title_lower:
+                return True
+
+        return False
+
+    def should_apply_to_job(self, job_details: Dict) -> bool:
+        """Determine if agent should apply to a job based on preferences"""
+        # Check payment threshold
+        payment = job_details.get('payment', 0)
+        if payment < self.preferences.minimum_payment:
+            return False
+
+        # Check daily application limit
+        today_applications = len([
+            job for job in self.jobs.values()
+            if job.applied_at and job.applied_at.date() == datetime.now().date()
+        ])
+        if today_applications >= self.preferences.maximum_daily_applications:
+            return False
+
+        # Check if already applied
+        job_id = job_details.get('id')
+        if job_id and job_id in self.jobs:
+            return False
+
+        # Check blacklist
+        company = job_details.get('company', '')
+        title = job_details.get('title', '')
+        if self.is_job_blacklisted(company, title):
+            return False
+
+        return True
+
+    def add_communication(self, job_id: str, message_type: str, content: str, timestamp: datetime = None):
+        """Add communication entry for a job"""
+        if timestamp is None:
+            timestamp = datetime.now()
+
         with self.lock:
-            if job_id in self.workflow.active_jobs:
-                self.workflow.active_jobs.remove(job_id)
-                if self.workflow.current_job_id == job_id:
-                    self.workflow.current_job_id = None
+            communication_entry = {
+                'job_id': job_id,
+                'type': message_type,
+                'content': content,
+                'timestamp': timestamp.isoformat()
+            }
+
+            self.communication_log.append(communication_entry)
+
+            # Also add to specific job's communication history
+            if job_id in self.jobs:
+                self.jobs[job_id].communication_history.append(communication_entry)
+
+            self.save_memory()
+
+    def get_job_communications(self, job_id: str) -> List[Dict]:
+        """Get all communications for a specific job"""
+        return [
+            comm for comm in self.communication_log
+            if comm.get('job_id') == job_id
+        ]
+
+    def cleanup_old_data(self):
+        """Remove old data to prevent memory bloat"""
+        with self.lock:
+            cutoff_date = datetime.now() - timedelta(days=MEMORY_RETENTION_DAYS)
+
+            # Remove old jobs
+            old_job_ids = [
+                job_id for job_id, job in self.jobs.items()
+                if job.completed_at and job.completed_at < cutoff_date
+            ]
+
+            for job_id in old_job_ids:
+                del self.jobs[job_id]
+
+            # Clean up communication log
+            self.communication_log = [
+                comm for comm in self.communication_log
+                if datetime.fromisoformat(comm['timestamp']) > cutoff_date
+            ]
+
+            if old_job_ids:
+                log_info(f"Cleaned up {len(old_job_ids)} old job records")
                 self.save_memory()
-                log_debug(f"Removed active job: {job_id}")
 
-    def set_current_job(self, job_id: str):
-        """Set the currently active job."""
-        with self.lock:
-            self.workflow.current_job_id = job_id
-            if job_id not in self.workflow.active_jobs:
-                self.add_active_job(job_id)
-            self.save_memory()
-
-    def learn_from_interaction(self, interaction_type: str, data: Dict[str, Any]):
-        """Learn from client interactions."""
-        with self.lock:
-            if interaction_type not in self.learned_patterns:
-                self.learned_patterns[interaction_type] = []
-
-            learning_entry = {
-                'data': data,
-                'timestamp': datetime.now(timezone.utc).isoformat()
-            }
-
-            self.learned_patterns[interaction_type].append(learning_entry)
-
-            # Keep only recent patterns (last 100 per type)
-            if len(self.learned_patterns[interaction_type]) > 100:
-                self.learned_patterns[interaction_type] = self.learned_patterns[interaction_type][-100:]
-
-            self.save_memory()
-            log_debug(f"Learned from interaction: {interaction_type}")
-
-    def record_client_interaction(self, client_id: str, interaction: Dict[str, Any]):
-        """Record interaction with a specific client."""
-        with self.lock:
-            if client_id not in self.client_interactions:
-                self.client_interactions[client_id] = []
-
-            interaction_record = {
-                **interaction,
-                'timestamp': datetime.now(timezone.utc).isoformat()
-            }
-
-            self.client_interactions[client_id].append(interaction_record)
-
-            # Keep only recent interactions per client (last 50)
-            if len(self.client_interactions[client_id]) > 50:
-                self.client_interactions[client_id] = self.client_interactions[client_id][-50:]
-
-            self.save_memory()
-
-    def get_client_history(self, client_id: str) -> List[Dict]:
-        """Get interaction history with a specific client."""
-        return self.client_interactions.get(client_id, [])
-
-    def get_session_data(self, key: str, default=None):
-        """Get session-specific data."""
-        return self.session_data.get(key, default)
-
-    def set_session_data(self, key: str, value: Any):
-        """Set session-specific data."""
-        with self.lock:
-            self.session_data[key] = value
-            # Don't save session data immediately (it's temporary)
-
-    def get_performance_summary(self) -> Dict[str, Any]:
-        """Get performance summary."""
-        with self.lock:
-            return {
-                'capabilities': asdict(self.capabilities),
-                'performance': asdict(self.performance),
-                'current_state': self.workflow.current_state.value,
-                'active_jobs_count': len(self.workflow.active_jobs),
-                'error_count': self.workflow.error_count,
-                'session_duration': self._calculate_session_duration()
-            }
-
-    def _calculate_session_duration(self) -> str:
-        """Calculate current session duration."""
-        try:
-            start_time = datetime.fromisoformat(self.workflow.session_start_time.replace('Z', '+00:00'))
-            duration = datetime.now(timezone.utc) - start_time
-            return str(duration).split('.')[0]  # Remove microseconds
-        except:
-            return "Unknown"
-
-    def reset_session(self):
-        """Reset session-specific data."""
-        with self.lock:
-            self.workflow.current_state = WorkflowState.IDLE
-            self.workflow.current_job_id = None
-            self.workflow.active_jobs = []
-            self.workflow.pending_actions = []
-            self.workflow.session_start_time = datetime.now(timezone.utc).isoformat()
-            self.session_data = {}
-            self.save_memory()
-            log_info("Reset agent session")
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """Get current memory statistics"""
+        return {
+            'total_jobs': len(self.jobs),
+            'jobs_by_status': {
+                status.value: len(self.get_jobs_by_status(status))
+                for status in JobStatus
+            },
+            'session_stats': asdict(self.session_stats),
+            'total_communications': len(self.communication_log),
+            'memory_file_size': self.memory_file.stat().st_size if self.memory_file.exists() else 0
+        }
 
 
 # Global memory instance
 agent_memory = AgentMemory()
+
+
+def get_memory() -> AgentMemory:
+    """Get the global agent memory instance"""
+    return agent_memory
+
+
+# Convenience functions for external modules
+def remember_job(job_memory: JobMemory):
+    """Add a job to memory"""
+    agent_memory.add_job(job_memory)
+
+
+def recall_job(job_id: str) -> Optional[JobMemory]:
+    """Retrieve a job from memory"""
+    return agent_memory.get_job(job_id)
+
+
+def update_job_memory(job_id: str, status: JobStatus, notes: str = ""):
+    """Update job status in memory"""
+    agent_memory.update_job_status(job_id, status, notes)
+
+
+def log_communication(job_id: str, message_type: str, content: str):
+    """Log a communication entry"""
+    agent_memory.add_communication(job_id, message_type, content)
+
+
+def should_apply(job_details: Dict) -> bool:
+    """Check if we should apply to a job"""
+    return agent_memory.should_apply_to_job(job_details)

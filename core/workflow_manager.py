@@ -14,7 +14,7 @@ from utils.data_store import DataStore
 from utils.logger import get_logger
 from core.memory import AgentMemory
 
-logger = get_logger(__name__)
+logger = get_logger()
 
 
 class WorkflowState(Enum):
